@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jogo da Velha</title>
+    
+<script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Estilos personalizados para a estética do jogo */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        /* Estilo base para cada célula */
+        .cell {
+            width: 100%;
+            height: 100%; /* Garante que a célula preencha o espaço do grid */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 3.5rem; /* Tamanho grande para X e O */
+            font-weight: bold;
+            cursor: pointer;
+            transition: background-color 0.2s ease, transform 0.1s;
+            user-select: none; /* Evita seleção de texto */
+        }
+
+        /* Efeito de hover e clique */
+        .cell:hover:not(.occupied) {
+            background-color: #e5e7eb;
+        }
+        .cell:active {
+            transform: scale(0.98);
+        }
+
+        /* Grid específico para o tabuleiro */
+        .board {
+            grid-template-columns: repeat(3, 1fr);
+            grid-template-rows: repeat(3, 1fr);
+            gap: 4px;
+            max-width: 400px;
+            width: 90vw; /* Responsivo */
+            max-height: 400px;
+            aspect-ratio: 1 / 1; /* Mantém o tabuleiro quadrado */
+        }
+
+        /* Estilo para as marcas de vitória */
+        .winning-cell {
+            background-color: #6ee7b7 !important; /* Verde claro */
+            color: #059669; /* Verde mais escuro */
+        }
+
+        /* Estilos para a animação de empate */
+        #draw-animation {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7); /* Fundo escuro semitransparente */
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 4rem;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+            opacity: 0; /* Começa invisível */
+            visibility: hidden;
+            transition: opacity 0.5s ease-in-out, visibility 0.5s ease-in-out;
+            z-index: 10; /* Z-index menor que o do botão de reset */
+        }
+
+        #draw-animation.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        #draw-animation img {
+            width: 200px; /* Tamanho da imagem da velhinha */
+            height: auto;
+            margin-bottom: 20px;
+            animation: bounceIn 1s ease-out forwards; /* Animação de entrada */
+        }
+
+        #draw-animation .draw-text {
+            animation: fadeInScale 1s ease-out forwards; /* Animação de entrada para o texto */
+            animation-delay: 0.3s; /* Atraso para o texto aparecer depois da imagem */
+            opacity: 0;
+            transform: scale(0.8);
+        }
+
+        /* Keyframes para as animações */
+        @keyframes bounceIn {
+            0% { transform: scale(0.3); opacity: 0; }
+            50% { transform: scale(1.1); opacity: 1; }
+            70% { transform: scale(0.9); }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        @keyframes fadeInScale {
+            0% { opacity: 0; transform: scale(0.8); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+    </style>
+</head>
+<body>
+
+<div class="p-6 bg-white rounded-xl shadow-2xl border border-gray-100 w-full max-w-sm flex flex-col items-center relative">
+    
+<h1 class="text-3xl font-extrabold text-gray-800 mb-4">Jogo da Velha</h1>
+    <div id="game-status" class="mb-6 text-lg font-semibold text-gray-600">
+        
+É a vez do Jogador X
+    </div>
+
+    
+<div id="board" class="board grid bg-gray-300 rounded-lg">
+        
+<div id="c0" data-index="0" class="cell bg-white rounded-sm"></div>
+        <div id="c1" data-index="1" class="cell bg-white rounded-sm"></div>
+        <div id="c2" data-index="2" class="cell bg-white rounded-sm"></div>
+        <div id="c3" data-index="3" class="cell bg-white rounded-sm"></div>
+        <div id="c4" data-index="4" class="cell bg-white rounded-sm"></div>
+        <div id="c5" data-index="5" class="cell bg-white rounded-sm"></div>
+        <div id="c6" data-index="6" class="cell bg-white rounded-sm"></div>
+        <div id="c7" data-index="7" class="cell bg-white rounded-sm"></div>
+        <div id="c8" data-index="8" class="cell bg-white rounded-sm"></div>
+    </div>
+
+    <!-- O botão Reiniciar agora tem 'relative z-20' para ficar acima do overlay -->
+    <button id="reset-button" class="mt-8 px-6 py-3 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 transition duration-150 shadow-md shadow-indigo-300 active:shadow-none relative z-20">
+        Reiniciar Jogo
+    </button>
+
+    
+<div id="draw-animation">
+        <img src="https://em-content.zobj.net/source/apple/354/old-woman_1f475.png" alt="Velhinha Rindo">
+        <div class="draw-text">EMPATE!</div>
+    </div>
+</div>
+
+<script>
+    const cells = document.querySelectorAll('.cell');
+    const statusDisplay = document.getElementById('game-status');
+    const resetButton = document.getElementById('reset-button');
+    const drawAnimation = document.getElementById('draw-animation');
+
+    let gameActive = true;
+    let currentPlayer = 'X';
+    let gameState = ["", "", "", "", "", "", "", "", ""]; // Representa o estado do tabuleiro (9 posições)
+
+    // Todas as combinações de vitória possíveis (índices 0-8)
+    const winningConditions = [
+        [0, 1, 2], [3, 4, 5], [6, 7, 8], // Linhas
+        [0, 3, 6], [1, 4, 7], [2, 5, 8], // Colunas
+        [0, 4, 8], [2, 4, 6]             // Diagonais
+    ];
+
+    /**
+     * Atualiza o texto de status na tela.
+     * @param {string} message - A mensagem a ser exibida.
+     */
+    const setStatusMessage = (message) => {
+        statusDisplay.innerHTML = message;
+    };
+
+    /**
+     * Exibe a animação de empate.
+     */
+    const showDrawAnimation = () => {
+        drawAnimation.classList.add('active');
+    };
+
+    /**
+     * Oculta a animação de empate.
+     */
+    const hideDrawAnimation = () => {
+        drawAnimation.classList.remove('active');
+    };
+
+    /**
+     * Verifica se o jogo terminou com vitória ou empate.
+     */
+    const checkWin = () => {
+        let roundWon = false;
+        let winningCombination = [];
+
+        // Itera sobre as condições de vitória
+        for (let i = 0; i < winningConditions.length; i++) {
+            const winCondition = winningConditions[i];
+            let a = gameState[winCondition[0]];
+            let b = gameState[winCondition[1]];
+            let c = gameState[winCondition[2]];
+
+            // Se alguma célula estiver vazia, continue para a próxima condição
+            if (a === '' || b === '' || c === '') {
+                continue;
+            }
+            // Se as 3 células forem iguais, há um vencedor
+            if (a === b && b === c) {
+                roundWon = true;
+                winningCombination = winCondition;
+                break;
+            }
+        }
+
+        if (roundWon) {
+            gameActive = false;
+            setStatusMessage(`O Jogador ${currentPlayer} Venceu! 🎉`);
+            // Destaca as células vencedoras
+            winningCombination.forEach(index => {
+                document.getElementById(`c${index}`).classList.add('winning-cell');
+            });
+            return;
+        }
+
+        // Verifica empate (se não houver mais espaços vazios)
+        if (!gameState.includes("")) {
+            gameActive = false;
+            setStatusMessage("Empate! 🤝");
+            showDrawAnimation(); // Mostra a animação de empate
+            return;
+        }
+
+        // Se o jogo continuar, troca o jogador
+        changePlayer();
+    };
+
+    /**
+     * Alterna para o próximo jogador e atualiza o status.
+     */
+    const changePlayer = () => {
+        currentPlayer = currentPlayer === 'X' ? 'O' : 'X';
+        if (gameActive) {
+            setStatusMessage(`É a vez do Jogador ${currentPlayer}`);
+        }
+    };
+
+    /**
+     * Lida com o clique em uma célula.
+     * @param {Event} clickedCellEvent - O evento de clique.
+     */
+    const handleCellClick = (clickedCellEvent) => {
+        const clickedCell = clickedCellEvent.target;
+        const clickedCellIndex = parseInt(clickedCell.getAttribute('data-index'));
+
+        // Se a célula já estiver preenchida ou o jogo não estiver ativo, ignore
+        if (gameState[clickedCellIndex] !== "" || !gameActive) {
+            return;
+        }
+
+        // 1. Atualiza o estado do jogo e a célula na tela
+        gameState[clickedCellIndex] = currentPlayer;
+        clickedCell.innerHTML = currentPlayer;
+        clickedCell.classList.add('occupied'); // Marca a célula como ocupada
+
+        // 2. Verifica vitória ou empate
+        checkWin();
+    };
+
+    /**
+     * Reinicia o jogo para o estado inicial.
+     */
+    const handleResetGame = () => {
+        gameActive = true;
+        currentPlayer = 'X';
+        gameState = ["", "", "", "", "", "", "", "", ""];
+        setStatusMessage("É a vez do Jogador X");
+        hideDrawAnimation(); // Oculta a animação de empate ao reiniciar
+
+        cells.forEach(cell => {
+            cell.innerHTML = "";
+            cell.classList.remove('occupied', 'winning-cell');
+        });
+    };
+
+    // Adiciona event listeners
+    cells.forEach(cell => cell.addEventListener('click', handleCellClick));
+    resetButton.addEventListener('click', handleResetGame);
+
+    // Inicia o jogo
+    handleResetGame();
+</script>
+</body>
+</html>
+
