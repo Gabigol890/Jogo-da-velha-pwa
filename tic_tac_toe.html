@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -18,11 +17,21 @@
 
         // Configurações e Variáveis Globais (Disponíveis no escopo global)
         window.appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        window.firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        
+        let config = {};
+        try {
+            // Tenta parsear a configuração do ambiente. Se falhar (e.g., no GitHub), usa objeto vazio.
+            config = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        } catch (e) {
+            console.error("Erro ao parsear a configuração do Firebase, usando objeto vazio.", e);
+            config = {};
+        }
+        window.firebaseConfig = config;
         window.authToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        window.isFirebaseAvailable = Object.keys(window.firebaseConfig).length > 0;
         
         // Inicialização do Firebase
-        if (Object.keys(window.firebaseConfig).length > 0) {
+        if (window.isFirebaseAvailable) {
             window.app = initializeApp(window.firebaseConfig);
             window.db = getFirestore(window.app);
             window.auth = getAuth(window.app);
@@ -35,13 +44,16 @@
          * Realiza a autenticação inicial (Token ou Anônima).
          */
         window.initAuth = async () => {
-            if (!window.auth) {
-                // Se Firebase não carregou, avisa que o Auth está pronto para o modo local.
+             // CRÍTICO: Se Firebase não estiver disponível, sinaliza imediatamente que a UI está pronta 
+             // para que o modo local possa ser jogado.
+            if (!window.isFirebaseAvailable) {
                 if (typeof window.handleAuthReady === 'function') {
-                    window.handleAuthReady(false); 
+                    window.handleAuthReady(false); // false indica que a auth falhou (por falta de config)
                 }
                 return;
             }
+            
+            // Se Firebase está disponível, procede com a autenticação
             try {
                 if (window.authToken) {
                     await signInWithCustomToken(window.auth, window.authToken);
@@ -49,22 +61,24 @@
                     await signInAnonymously(window.auth);
                 }
             } catch (error) {
-                console.error("Erro na autenticação Firebase.", error);
+                console.error("Erro na autenticação Firebase. Tentando login anônimo.", error);
                 await signInAnonymously(window.auth).catch(e => console.error("Falha no login anônimo", e)); 
             }
         };
 
         /**
-         * CRÍTICO: Este listener decide quando o app está pronto.
+         * CRÍTICO: Este listener decide quando o app está pronto para Multiplayer.
          */
-        onAuthStateChanged(window.auth, (user) => {
-            // Garante que o ID do usuário seja sempre definido, mesmo que anônimo
-            window.currentUserId = user?.uid || crypto.randomUUID(); 
-            // Sinaliza que a autenticação (ou falta dela) foi concluída
-            if (typeof window.handleAuthReady === 'function') {
-                window.handleAuthReady(true);
-            }
-        });
+        if (window.isFirebaseAvailable && window.auth) {
+            onAuthStateChanged(window.auth, (user) => {
+                // Garante que o ID do usuário seja sempre definido, mesmo que anônimo
+                window.currentUserId = user?.uid || crypto.randomUUID(); 
+                // Sinaliza que a autenticação (ou falta dela) foi concluída
+                if (typeof window.handleAuthReady === 'function') {
+                    window.handleAuthReady(true); // true indica que a auth foi bem-sucedida
+                }
+            });
+        }
 
     </script>
 
@@ -309,8 +323,9 @@
 
 <script type="module">
     // Garante que as variáveis do Firebase estejam no escopo
+    // O status de disponibilidade do Firebase é definido no script module
+    const isFirebaseAvailable = window.isFirebaseAvailable; 
     const { db, auth } = window; 
-    const isFirebaseAvailable = !!db; // Checa se o Firebase foi inicializado
 
     // --- Variáveis Globais do Jogo ---
     const startMenu = document.getElementById('start-menu');
@@ -320,7 +335,7 @@
     
     const localPlayerNameInput = document.getElementById('localPlayerName');
     const authStatusDisplay = document.getElementById('auth-status');
-    const startLocalGameButton = document.getElementById('start-local-game-button'); // NOVO BOTÃO
+    const startLocalGameButton = document.getElementById('start-local-game-button'); 
     const createGameButton = document.getElementById('create-game-button');
     const showJoinButton = document.getElementById('show-join-button');
     const joinGameInput = document.getElementById('gameIdInput');
@@ -422,7 +437,7 @@
         if (screenId !== 'game-content') {
             stopMusic();
         }
-    };
+    }
 
     /** Reinicia o estado local E multiplayer do jogo. */
     const resetLocalGame = () => {
@@ -463,8 +478,7 @@
         }
         resetLocalGame();
         showScreen('start-menu');
-        // A atualização de status agora é feita em `handleAuthReady`
-    };
+    }
     resetButton.addEventListener('click', () => handleBackToMenu(isMultiplayer)); // Passa o modo atual
     cancelButton.addEventListener('click', () => handleBackToMenu(true));
     backToMenuButton.addEventListener('click', () => showScreen('start-menu'));
@@ -804,11 +818,11 @@
         } else {
             document.getElementById('board').style.cursor = 'not-allowed';
         }
-    };
+    }
     
     // --- Funções de Inicialização (CORRIGIDO) ---
     
-    const updateAuthStatus = (isReady, isFirebaseOk) => {
+    const updateAuthStatus = (isAuthSuccessful, isFirebaseOk) => {
         if (!isFirebaseOk) {
             authStatusDisplay.textContent = `Modo Multiplayer Desativado (Sem Firebase)`;
             createGameButton.disabled = true;
@@ -816,22 +830,23 @@
             return;
         }
         
-        if (isReady) {
+        if (isAuthSuccessful) {
             authStatusDisplay.textContent = `Usuário ID: ${window.currentUserId.substring(0, 8)}... (Conectado)`;
             createGameButton.disabled = false;
             showJoinButton.disabled = false;
         } else {
-            authStatusDisplay.textContent = 'Autenticando...';
+             // Caso auth falhe, mas o firebase esteja disponível (problema de token/permissoes)
+            authStatusDisplay.textContent = 'Erro de Autenticação. Multiplayer Desativado.';
             createGameButton.disabled = true;
             showJoinButton.disabled = true;
         }
     }
     
-    /** CRÍTICO: Esta função agora é chamada *após* a autenticação. */
+    /** CRÍTICO: Esta função agora é chamada *após* a autenticação OU falha na configuração. */
     window.handleAuthReady = (isAuthSuccessful) => {
-        // Mostra o menu e atualiza o status, mesmo que a autenticação tenha falhado (isAuthSuccessful=false)
+        // Sinaliza a prontidão da UI, usando o status de disponibilidade do Firebase
         showScreen('start-menu');
-        updateAuthStatus(isAuthSuccessful, isFirebaseAvailable);
+        updateAuthStatus(isAuthSuccessful, window.isFirebaseAvailable);
     };
     
     // --- Event Listener do Botão de Copiar ID ---
