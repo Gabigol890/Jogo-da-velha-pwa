@@ -1,13 +1,75 @@
+
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jogo da Velha</title>
+    <title>Jogo da Velha Multiplayer</title>
     
-<script src="https://cdn.tailwindcss.com"></script>
+    <link rel="manifest" href="manifest.json">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Importações do Firebase -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, updateDoc, onSnapshot, runTransaction, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Configurações e Variáveis Globais (Disponíveis no escopo global)
+        window.appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        window.firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        window.authToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        // Inicialização do Firebase
+        if (Object.keys(window.firebaseConfig).length > 0) {
+            window.app = initializeApp(window.firebaseConfig);
+            window.db = getFirestore(window.app);
+            window.auth = getAuth(window.app);
+            setLogLevel('Debug');
+        } else {
+            console.warn("Configuração do Firebase não encontrada. O modo Multiplayer está desativado.");
+        }
+        
+        /**
+         * Realiza a autenticação inicial (Token ou Anônima).
+         */
+        window.initAuth = async () => {
+            if (!window.auth) {
+                // Se Firebase não carregou, avisa que o Auth está pronto para o modo local.
+                if (typeof window.handleAuthReady === 'function') {
+                    window.handleAuthReady(false); 
+                }
+                return;
+            }
+            try {
+                if (window.authToken) {
+                    await signInWithCustomToken(window.auth, window.authToken);
+                } else {
+                    await signInAnonymously(window.auth);
+                }
+            } catch (error) {
+                console.error("Erro na autenticação Firebase.", error);
+                await signInAnonymously(window.auth).catch(e => console.error("Falha no login anônimo", e)); 
+            }
+        };
+
+        /**
+         * CRÍTICO: Este listener decide quando o app está pronto.
+         */
+        onAuthStateChanged(window.auth, (user) => {
+            // Garante que o ID do usuário seja sempre definido, mesmo que anônimo
+            window.currentUserId = user?.uid || crypto.randomUUID(); 
+            // Sinaliza que a autenticação (ou falta dela) foi concluída
+            if (typeof window.handleAuthReady === 'function') {
+                window.handleAuthReady(true);
+            }
+        });
+
+    </script>
+
     <style>
-        /* Estilos personalizados para a estética do jogo */
+        /* Estilos base (Mantido para o tabuleiro e animações) */
         body {
             font-family: 'Inter', sans-serif;
             background-color: #f3f4f6;
@@ -18,21 +80,23 @@
             padding: 20px;
         }
 
-        /* Estilo base para cada célula */
+        .game-container {
+            p-6 bg-white rounded-xl shadow-2xl border border-gray-100 w-full max-w-sm flex flex-col items-center relative;
+        }
+
         .cell {
             width: 100%;
-            height: 100%; /* Garante que a célula preencha o espaço do grid */
+            height: 100%;
             display: flex;
             justify-content: center;
             align-items: center;
-            font-size: 3.5rem; /* Tamanho grande para X e O */
+            font-size: 3.5rem;
             font-weight: bold;
             cursor: pointer;
             transition: background-color 0.2s ease, transform 0.1s;
-            user-select: none; /* Evita seleção de texto */
+            user-select: none;
         }
 
-        /* Efeito de hover e clique */
         .cell:hover:not(.occupied) {
             background-color: #e5e7eb;
         }
@@ -40,255 +104,763 @@
             transform: scale(0.98);
         }
 
-        /* Grid específico para o tabuleiro */
         .board {
             grid-template-columns: repeat(3, 1fr);
             grid-template-rows: repeat(3, 1fr);
             gap: 4px;
             max-width: 400px;
-            width: 90vw; /* Responsivo */
+            width: 90vw;
             max-height: 400px;
-            aspect-ratio: 1 / 1; /* Mantém o tabuleiro quadrado */
+            aspect-ratio: 1 / 1;
         }
 
-        /* Estilo para as marcas de vitória */
         .winning-cell {
-            background-color: #6ee7b7 !important; /* Verde claro */
-            color: #059669; /* Verde mais escuro */
+            background-color: #6ee7b7 !important;
+            color: #059669;
         }
 
-        /* Estilos para a animação de empate */
-        #draw-animation {
+        /* Animações e Overlays */
+        .overlay {
             position: absolute;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            background-color: rgba(0, 0, 0, 0.7); /* Fundo escuro semitransparente */
+            background-color: rgba(0, 0, 0, 0.7);
             display: flex;
             flex-direction: column;
             justify-content: center;
             align-items: center;
             color: white;
-            font-size: 4rem;
             font-weight: bold;
             text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
-            opacity: 0; /* Começa invisível */
+            opacity: 0; 
             visibility: hidden;
             transition: opacity 0.5s ease-in-out, visibility 0.5s ease-in-out;
-            z-index: 10; /* Z-index menor que o do botão de reset */
+            z-index: 10; 
+            text-align: center;
+        }
+        .overlay.active { opacity: 1; visibility: visible; }
+        #win-overlay .trophy { font-size: 8rem; animation: pulse 1s infinite alternate; }
+        #win-overlay .win-text { font-size: 2rem; margin-top: 10px; opacity: 0; transform: scale(0.8); animation: fadeInScale 1s ease-out forwards 0.3s; }
+        #draw-animation img { width: 200px; height: auto; margin-bottom: 20px; animation: bounceIn 1s ease-out forwards; }
+        #draw-animation .draw-text { font-size: 4rem; opacity: 0; transform: scale(0.8); animation: fadeInScale 1s ease-out forwards 0.3s; }
+        @keyframes bounceIn { 0% { transform: scale(0.3); opacity: 0; } 50% { transform: scale(1.1); opacity: 1; } 70% { transform: scale(0.9); } 100% { transform: scale(1); opacity: 1; } }
+        @keyframes fadeInScale { 0% { opacity: 0; transform: scale(0.8); } 100% { opacity: 1; transform: scale(1); } }
+        @keyframes pulse { 0% { transform: scale(1); } 100% { transform: scale(1.1); } }
+
+        /* Estilo para o menu Rubro-Negro */
+        .rubro-negro-bg { background-color: #E5322C; }
+        .rubro-negro-font { font-family: 'Arial Black', Gadget, sans-serif; letter-spacing: 2px; font-weight: 900; }
+
+        /* Estilo para esconder/mostrar conteúdos */
+        #game-content, #lobby-wait, #join-game {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
         }
 
-        #draw-animation.active {
-            opacity: 1;
-            visibility: visible;
-        }
-
-        #draw-animation img {
-            width: 200px; /* Tamanho da imagem da velhinha */
-            height: auto;
-            margin-bottom: 20px;
-            animation: bounceIn 1s ease-out forwards; /* Animação de entrada */
-        }
-
-        #draw-animation .draw-text {
-            animation: fadeInScale 1s ease-out forwards; /* Animação de entrada para o texto */
-            animation-delay: 0.3s; /* Atraso para o texto aparecer depois da imagem */
-            opacity: 0;
-            transform: scale(0.8);
-        }
-
-        /* Keyframes para as animações */
-        @keyframes bounceIn {
-            0% { transform: scale(0.3); opacity: 0; }
-            50% { transform: scale(1.1); opacity: 1; }
-            70% { transform: scale(0.9); }
-            100% { transform: scale(1); opacity: 1; }
-        }
-
-        @keyframes fadeInScale {
-            0% { opacity: 0; transform: scale(0.8); }
-            100% { opacity: 1; transform: scale(1); }
-        }
     </style>
 </head>
 <body>
 
-<div class="p-6 bg-white rounded-xl shadow-2xl border border-gray-100 w-full max-w-sm flex flex-col items-center relative">
+<div id="main-container" class="w-full max-w-sm flex flex-col items-center relative rounded-xl shadow-2xl border border-gray-100">
     
-<h1 class="text-3xl font-extrabold text-gray-800 mb-4">Jogo da Velha</h1>
-    <div id="game-status" class="mb-6 text-lg font-semibold text-gray-600">
+    <!-- --- Menu Inicial ESTILIZADO (Rubro-Negro) --- -->
+    <div id="start-menu" class="w-full p-8 flex flex-col space-y-4 rounded-xl shadow-inner rubro-negro-bg">
         
-É a vez do Jogador X
+        <!-- Título -->
+        <div class="flex flex-col items-center text-black rubro-negro-font mb-6">
+            <h1 class="text-4xl text-center">
+                <span class="text-5xl italic font-serif">R</span>
+                JOGO DA VELHA
+                <span class="text-5xl italic font-serif">R</span>
+            </h1>
+            <p id="auth-status" class="text-xs text-black italic mt-1">
+                Autenticando...
+            </p>
+        </div>
+
+        <!-- Input Nome do Jogador Local -->
+        <label for="localPlayerName" class="text-white font-bold text-lg italic rubro-negro-font">SEU NOME (Multiplayer):</label>
+        <input type="text" id="localPlayerName" value="Jogador" placeholder="Digite seu nome" 
+               class="p-4 border-4 border-black bg-transparent text-white text-lg rounded-none focus:outline-none focus:border-white transition duration-150 shadow-inner"
+               style="text-shadow: 1px 1px #000;">
+        
+        <div class="mt-8 flex flex-col space-y-4">
+            
+            <!-- Opção 1: Jogo Local (NOVA OPÇÃO) -->
+            <button id="start-local-game-button"
+                    class="w-full py-3 bg-white text-black font-bold text-xl rounded-none shadow-xl shadow-black/50 hover:bg-gray-200 transition duration-150 active:shadow-none italic rubro-negro-font">
+                JOGAR LOCAL (2 JOGADORES)
+            </button>
+
+            <div class="border-t border-dashed border-black/50 my-4 pt-4">
+                <p class="text-center text-black font-bold text-sm">--- OU MULTIPLAYER ONLINE ---</p>
+            </div>
+            
+            <!-- Botão Criar Jogo -->
+            <button id="create-game-button" disabled
+                    class="w-full py-3 bg-black text-white font-bold text-xl rounded-none shadow-xl shadow-black/50 hover:bg-gray-800 transition duration-150 active:shadow-none italic rubro-negro-font disabled:opacity-50">
+                CRIAR NOVO JOGO
+            </button>
+            
+            <!-- Botão Entrar em Jogo -->
+            <button id="show-join-button" disabled
+                    class="w-full py-3 bg-gray-200 text-black font-bold text-xl rounded-none shadow-xl shadow-black/50 hover:bg-gray-400 transition duration-150 active:shadow-none italic rubro-negro-font disabled:opacity-50">
+                ENTRAR COM ID
+            </button>
+        </div>
+    </div>
+    
+    <!-- --- Tela de Entrar em Jogo --- -->
+    <div id="join-game" class="w-full p-8 flex flex-col space-y-4 rounded-xl shadow-inner rubro-negro-bg">
+        <h2 class="text-2xl text-white text-center rubro-negro-font">ENTRAR NO JOGO</h2>
+        
+        <label for="gameIdInput" class="text-white font-bold text-lg italic rubro-negro-font">CÓDIGO DO JOGO:</label>
+        <input type="text" id="gameIdInput" placeholder="Ex: XXXXXXXX" 
+               class="p-4 border-4 border-black bg-transparent text-white text-lg rounded-none focus:outline-none focus:border-white transition duration-150 shadow-inner uppercase"
+               maxlength="8" style="text-shadow: 1px 1px #000;">
+        
+        <button id="join-game-button" 
+                class="mt-4 w-full py-4 bg-black text-white font-bold text-3xl rounded-none shadow-xl shadow-black/50 hover:bg-gray-800 transition duration-150 active:shadow-none italic rubro-negro-font">
+            ENTRAR
+        </button>
+        
+        <button id="back-to-menu" 
+                class="w-full py-2 text-white font-bold text-lg italic rubro-negro-font mt-2">
+            Voltar ao Menu Principal
+        </button>
+    </div>
+
+
+    <!-- --- Lobby de Espera --- -->
+    <div id="lobby-wait" class="w-full p-8 flex flex-col items-center space-y-6 rounded-xl shadow-inner rubro-negro-bg">
+        <h2 class="text-2xl text-white text-center rubro-negro-font">ESPERANDO OPONENTE...</h2>
+        <div id="lobby-message" class="text-xl text-white text-center">
+            Compartilhe o código para que seu amigo entre.
+        </div>
+        
+        <label class="text-white font-bold text-lg italic rubro-negro-font">ID DO JOGO:</label>
+        <div id="game-id-display" class="text-3xl text-white p-3 border-4 border-black bg-black/50 rounded-lg rubro-negro-font">
+            Aguardando...
+        </div>
+        
+        <button id="copy-id-button" 
+                class="w-full py-3 bg-white text-black font-bold text-lg rounded-none hover:bg-gray-300 transition duration-150 italic">
+            COPIAR CÓDIGO
+        </button>
+        
+        <button id="cancel-lobby-button" 
+                class="w-full py-3 text-white font-bold text-lg italic rubro-negro-font mt-4 hover:text-gray-300">
+            Cancelar e Voltar
+        </button>
+    </div>
+
+
+    <!-- --- Conteúdo do Jogo (Aparece após o segundo jogador entrar) --- -->
+    <div id="game-content" class="w-full p-6 bg-white flex flex-col items-center rounded-xl">
+        <h1 class="text-3xl font-extrabold text-gray-800 mb-2">Jogo Ativo</h1>
+        <div id="player-role-display" class="text-xl font-bold mb-4"></div>
+        <div id="game-status" class="mb-6 text-lg font-semibold text-gray-600 text-center">
+            
+        </div>
+
+        <div id="board" class="board grid bg-gray-300 rounded-lg">
+            
+            <div id="c0" data-index="0" class="cell bg-white rounded-sm"></div>
+            <div id="c1" data-index="1" class="cell bg-white rounded-sm"></div>
+            <div id="c2" data-index="2" class="cell bg-white rounded-sm"></div>
+            <div id="c3" data-index="3" class="cell bg-white rounded-sm"></div>
+            <div id="c4" data-index="4" class="cell bg-white rounded-sm"></div>
+            <div id="c5" data-index="5" class="cell bg-white rounded-sm"></div>
+            <div id="c6" data-index="6" class="cell bg-white rounded-sm"></div>
+            <div id="c7" data-index="7" class="cell bg-white rounded-sm"></div>
+            <div id="c8" data-index="8" class="cell bg-white rounded-sm"></div>
+        </div>
+
+        <button id="reset-button" class="mt-8 px-6 py-3 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 transition duration-150 shadow-md shadow-indigo-300 active:shadow-none relative z-20">
+            Voltar ao Menu Principal
+        </button>
     </div>
 
     
-<div id="board" class="board grid bg-gray-300 rounded-lg">
-        
-<div id="c0" data-index="0" class="cell bg-white rounded-sm"></div>
-        <div id="c1" data-index="1" class="cell bg-white rounded-sm"></div>
-        <div id="c2" data-index="2" class="cell bg-white rounded-sm"></div>
-        <div id="c3" data-index="3" class="cell bg-white rounded-sm"></div>
-        <div id="c4" data-index="4" class="cell bg-white rounded-sm"></div>
-        <div id="c5" data-index="5" class="cell bg-white rounded-sm"></div>
-        <div id="c6" data-index="6" class="cell bg-white rounded-sm"></div>
-        <div id="c7" data-index="7" class="cell bg-white rounded-sm"></div>
-        <div id="c8" data-index="8" class="cell bg-white rounded-sm"></div>
-    </div>
-
-    <!-- O botão Reiniciar agora tem 'relative z-20' para ficar acima do overlay -->
-    <button id="reset-button" class="mt-8 px-6 py-3 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 transition duration-150 shadow-md shadow-indigo-300 active:shadow-none relative z-20">
-        Reiniciar Jogo
-    </button>
-
-    
-<div id="draw-animation">
+    <!-- Animação de Empate -->
+    <div id="draw-animation" class="overlay">
         <img src="https://em-content.zobj.net/source/apple/354/old-woman_1f475.png" alt="Velhinha Rindo">
         <div class="draw-text">EMPATE!</div>
     </div>
+    
+    <!-- Animação de Vitória (Troféu) -->
+    <div id="win-overlay" class="overlay">
+        <div class="trophy">🏆</div>
+        <div id="win-text" class="win-text"></div>
+    </div>
+
+    <!-- Mensagem de Erro/Loading -->
+    <div id="message-box" class="fixed top-0 left-0 w-full h-full flex justify-center items-center bg-black/70 hidden z-50">
+        <div class="bg-white p-6 rounded-lg shadow-xl text-center max-w-xs">
+            <p id="message-text" class="font-semibold text-lg text-gray-800 mb-4">Carregando...</p>
+            <button id="close-message-box" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 hidden">OK</button>
+        </div>
+    </div>
 </div>
 
-<script>
+<script type="module">
+    // Garante que as variáveis do Firebase estejam no escopo
+    const { db, auth } = window; 
+    const isFirebaseAvailable = !!db; // Checa se o Firebase foi inicializado
+
+    // --- Variáveis Globais do Jogo ---
+    const startMenu = document.getElementById('start-menu');
+    const joinGameScreen = document.getElementById('join-game');
+    const lobbyWait = document.getElementById('lobby-wait');
+    const gameContent = document.getElementById('game-content');
+    
+    const localPlayerNameInput = document.getElementById('localPlayerName');
+    const authStatusDisplay = document.getElementById('auth-status');
+    const startLocalGameButton = document.getElementById('start-local-game-button'); // NOVO BOTÃO
+    const createGameButton = document.getElementById('create-game-button');
+    const showJoinButton = document.getElementById('show-join-button');
+    const joinGameInput = document.getElementById('gameIdInput');
+    const joinGameButton = document.getElementById('join-game-button');
+    const backToMenuButton = document.getElementById('back-to-menu');
+    const lobbyMessage = document.getElementById('lobby-message');
+    const gameIdDisplay = document.getElementById('game-id-display');
+    const copyIdButton = document.getElementById('copy-id-button');
+    const cancelButton = document.getElementById('cancel-lobby-button');
+
     const cells = document.querySelectorAll('.cell');
     const statusDisplay = document.getElementById('game-status');
+    const playerRoleDisplay = document.getElementById('player-role-display');
     const resetButton = document.getElementById('reset-button');
     const drawAnimation = document.getElementById('draw-animation');
+    const winOverlay = document.getElementById('win-overlay');
+    const winText = document.getElementById('win-text');
+    
+    // Modal de Mensagem
+    const messageBox = document.getElementById('message-box');
+    const messageText = document.getElementById('message-text');
+    const closeMessageBox = document.getElementById('close-message-box');
 
-    let gameActive = true;
-    let currentPlayer = 'X';
-    let gameState = ["", "", "", "", "", "", "", "", ""]; // Representa o estado do tabuleiro (9 posições)
-
-    // Todas as combinações de vitória possíveis (índices 0-8)
-    const winningConditions = [
-        [0, 1, 2], [3, 4, 5], [6, 7, 8], // Linhas
-        [0, 3, 6], [1, 4, 7], [2, 5, 8], // Colunas
-        [0, 4, 8], [2, 4, 6]             // Diagonais
-    ];
-
-    /**
-     * Atualiza o texto de status na tela.
-     * @param {string} message - A mensagem a ser exibida.
-     */
-    const setStatusMessage = (message) => {
-        statusDisplay.innerHTML = message;
+    // --- Variáveis de Estado do Jogo (Local & Online) ---
+    let currentPlayerRole = null; // 'X' or 'O' for the local user
+    let currentGameId = null;
+    let unsubscribe = null; // Função para parar de escutar o Firestore
+    let isMultiplayer = false; // Define o modo de jogo (Multiplayer Online vs Local)
+    
+    // Estado do jogo para o modo LOCAL
+    let localGameState = {
+        board: ["", "", "", "", "", "", "", "", ""],
+        currentPlayer: 'X',
+        status: 'active',
+        winner: null,
+        players: { X: { name: 'X' }, O: { name: 'O' } } // Nomes fixos para o modo local
     };
 
-    /**
-     * Exibe a animação de empate.
-     */
-    const showDrawAnimation = () => {
-        drawAnimation.classList.add('active');
-    };
 
-    /**
-     * Oculta a animação de empate.
-     */
-    const hideDrawAnimation = () => {
+    // --- Variáveis e Funções de Áudio (Mantidas) ---
+    let audioInitialized = false;
+    let backgroundMusic;
+    const playEffect = new Tone.PolySynth(Tone.Synth).toDestination();
+    const winEffect = new Tone.Sampler({ urls: { "C4": "https://cdn.jsdelivr.net/gh/tonejs/examples@master/examples/assets/drums/AcousticDrumKit/kick.wav" } }).toDestination();
+    winEffect.volume.value = -10;
+    const drawEffect = new Tone.NoiseSynth({ volume: -10 }).toDestination();
+
+    const startBackgroundMusic = () => {
+        if (audioInitialized) return;
+        Tone.start();
+        const synth = new Tone.PolySynth(Tone.Synth, { oscillator: { type: "square" }, envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 0.2 }, volume: -15 }).toDestination();
+        const notes = ["C4", "E4", "G4", "A4", "G4", "E4", "C4", null];
+        let index = 0;
+        backgroundMusic = new Tone.Loop(time => {
+            const note = notes[index % notes.length];
+            if (note) { synth.triggerAttackRelease(note, "8n", time); }
+            index++;
+        }, "4n").start(0);
+        Tone.Transport.bpm.value = 120;
+        Tone.Transport.start();
+        audioInitialized = true;
+    };
+    const playMoveSound = (player) => { if (!audioInitialized) return; const note = player === 'X' ? 'C5' : 'G4'; playEffect.triggerAttackRelease(note, '16n'); };
+    const playWinSound = () => { if (!audioInitialized) return; Tone.Transport.stop(); winEffect.triggerAttackRelease('C4', '2n'); };
+    const playDrawSound = () => { if (!audioInitialized) return; Tone.Transport.stop(); drawEffect.triggerAttackRelease('8n'); };
+    const stopMusic = () => { if (audioInitialized && Tone.Transport.state === 'started') { Tone.Transport.stop(); } };
+
+    // --- Funções Auxiliares de UI/Modal ---
+    
+    const showMessage = (text, isError = false) => {
+        messageText.textContent = text;
+        messageBox.classList.remove('hidden');
+        closeMessageBox.classList.toggle('hidden', !isError); 
+        if (isError) {
+            console.error(text);
+        }
+    };
+    
+    const hideMessage = () => {
+        messageBox.classList.add('hidden');
+        closeMessageBox.classList.add('hidden');
+    };
+    closeMessageBox.addEventListener('click', hideMessage);
+
+    /** Limpa todas as animações de fim de jogo. */
+    const hideWinAnimation = () => {
+        winOverlay.classList.remove('active');
         drawAnimation.classList.remove('active');
+        cells.forEach(cell => cell.classList.remove('winning-cell'));
     };
 
-    /**
-     * Verifica se o jogo terminou com vitória ou empate.
-     */
-    const checkWin = () => {
-        let roundWon = false;
-        let winningCombination = [];
+    /** Mostra a tela desejada e esconde as outras. */
+    const showScreen = (screenId) => {
+        [startMenu, joinGameScreen, lobbyWait, gameContent].forEach(screen => {
+            screen.style.display = 'none';
+        });
+        document.getElementById(screenId).style.display = 'flex';
+        
+        if (screenId !== 'game-content') {
+            stopMusic();
+        }
+    };
 
-        // Itera sobre as condições de vitória
-        for (let i = 0; i < winningConditions.length; i++) {
-            const winCondition = winningConditions[i];
-            let a = gameState[winCondition[0]];
-            let b = gameState[winCondition[1]];
-            let c = gameState[winCondition[2]];
+    /** Reinicia o estado local E multiplayer do jogo. */
+    const resetLocalGame = () => {
+        currentGameId = null;
+        currentPlayerRole = null;
+        isMultiplayer = false; 
+        localGameState = {
+            board: ["", "", "", "", "", "", "", "", ""],
+            currentPlayer: 'X',
+            status: 'active',
+            winner: null,
+            players: { X: { name: 'X' }, O: { name: 'O' } }
+        };
 
-            // Se alguma célula estiver vazia, continue para a próxima condição
-            if (a === '' || b === '' || c === '') {
-                continue;
-            }
-            // Se as 3 células forem iguais, há um vencedor
-            if (a === b && b === c) {
-                roundWon = true;
-                winningCombination = winCondition;
-                break;
+        if (unsubscribe) {
+            unsubscribe();
+            unsubscribe = null;
+        }
+        hideWinAnimation();
+    }
+
+    /** Retorna ao menu principal. */
+    const handleBackToMenu = async (shouldDeleteGame = false) => {
+        // A exclusão só é relevante se for multiplayer E o jogador for o criador (X)
+        if (isMultiplayer && shouldDeleteGame && currentGameId && currentPlayerRole === 'X' && isFirebaseAvailable) {
+            try {
+                const gameDocRef = doc(db, 'artifacts', window.appId, 'public', 'data', 'multiplayerGames', currentGameId);
+                await runTransaction(db, async (transaction) => {
+                    const docSnapshot = await transaction.get(gameDocRef);
+                    if (docSnapshot.exists() && docSnapshot.data().status === 'waiting') {
+                         transaction.delete(gameDocRef);
+                    }
+                });
+                console.log(`Jogo ${currentGameId} deletado (se estava em espera).`);
+            } catch (e) {
+                console.warn(`Não foi possível deletar o jogo ${currentGameId}.`, e);
             }
         }
+        resetLocalGame();
+        showScreen('start-menu');
+        // A atualização de status agora é feita em `handleAuthReady`
+    };
+    resetButton.addEventListener('click', () => handleBackToMenu(isMultiplayer)); // Passa o modo atual
+    cancelButton.addEventListener('click', () => handleBackToMenu(true));
+    backToMenuButton.addEventListener('click', () => showScreen('start-menu'));
 
-        if (roundWon) {
-            gameActive = false;
-            setStatusMessage(`O Jogador ${currentPlayer} Venceu! 🎉`);
-            // Destaca as células vencedoras
-            winningCombination.forEach(index => {
-                document.getElementById(`c${index}`).classList.add('winning-cell');
+
+    // --- Funções de Sincronização e Lógica Firebase (Multiplayer) ---
+    
+    const createGameId = () => Math.random().toString(36).substring(2, 10).toUpperCase();
+    const getGameDocRef = (id) => doc(db, 'artifacts', window.appId, 'public', 'data', 'multiplayerGames', id);
+
+
+    /**
+     * Tenta criar um novo jogo no Firestore.
+     */
+    const handleCreateGame = async () => {
+        if (!isFirebaseAvailable || !window.currentUserId) {
+             return showMessage("Erro: O modo Multiplayer requer conexão com o Firebase.", true);
+        }
+        showMessage("Criando novo jogo...", false);
+
+        const localPlayerName = localPlayerNameInput.value.trim() || 'JOGADOR X';
+        currentGameId = createGameId();
+        const gameDocRef = getGameDocRef(currentGameId);
+
+        try {
+            isMultiplayer = true; // Define o modo de jogo
+            currentPlayerRole = 'X';
+            
+            const initialGameState = {
+                board: ["", "", "", "", "", "", "", "", ""],
+                status: 'waiting',
+                currentPlayer: 'X',
+                players: {
+                    X: { userId: window.currentUserId, name: localPlayerName },
+                    O: null
+                },
+                winner: null,
+                createdAt: new Date().getTime(),
+            };
+
+            await setDoc(gameDocRef, initialGameState);
+            
+            hideMessage();
+            showScreen('lobby-wait'); 
+            startListeningToGame(currentGameId);
+        } catch (e) {
+            showMessage(`Falha ao criar o jogo. Detalhe: ${e.message}`, true);
+            resetLocalGame();
+        }
+    };
+    createGameButton.addEventListener('click', handleCreateGame);
+
+
+    /**
+     * Tenta se juntar a um jogo existente.
+     */
+    const handleJoinGame = async () => {
+        if (!isFirebaseAvailable || !window.currentUserId) {
+             return showMessage("Erro: O modo Multiplayer requer conexão com o Firebase.", true);
+        }
+
+        const id = joinGameInput.value.trim().toUpperCase();
+        if (id.length !== 8) return showMessage("O código do jogo deve ter 8 caracteres.", true);
+        
+        showMessage("Tentando entrar no jogo...", false);
+        const localPlayerName = localPlayerNameInput.value.trim() || 'JOGADOR O';
+        const gameDocRef = getGameDocRef(id);
+
+        try {
+            await runTransaction(db, async (transaction) => {
+                const gameDoc = await transaction.get(gameDocRef);
+
+                if (!gameDoc.exists()) throw new Error("Jogo não encontrado.");
+
+                const gameData = gameDoc.data();
+                
+                if (gameData.status !== 'waiting' || gameData.players.O !== null) throw new Error("O jogo já está ativo ou cheio.");
+                
+                if (gameData.players.X && gameData.players.X.userId === window.currentUserId) throw new Error("Você já está no jogo como Jogador X!");
+                
+                // Atribui o usuário como Jogador O
+                const updatedPlayers = {
+                    X: gameData.players.X,
+                    O: { userId: window.currentUserId, name: localPlayerName }
+                };
+                
+                transaction.update(gameDocRef, {
+                    players: updatedPlayers,
+                    status: 'active',
+                    lastMoveAt: new Date().getTime()
+                });
             });
+
+            // Sucesso na transação
+            isMultiplayer = true;
+            currentGameId = id;
+            currentPlayerRole = 'O';
+            hideMessage();
+            showScreen('game-content');
+            startListeningToGame(currentGameId);
+            startBackgroundMusic();
+            
+        } catch (e) {
+            showMessage(`Falha ao entrar: ${e.message}`, true);
+            resetLocalGame();
+        }
+    };
+    joinGameButton.addEventListener('click', handleJoinGame);
+    showJoinButton.addEventListener('click', () => showScreen('join-game'));
+    
+    // --- Lógica de Jogo Local (Offline) ---
+    
+    /** Inicia o jogo no modo Local (2 Jogadores no mesmo dispositivo) */
+    const startLocalGame = () => {
+        resetLocalGame(); // Limpa qualquer estado multiplayer anterior
+        isMultiplayer = false;
+        currentPlayerRole = 'X'; // O jogador local é o X, e oponente é o O, trocando a cada turno
+        showScreen('game-content');
+        startBackgroundMusic();
+        updateGameUI(localGameState); // Inicia a UI com o estado local
+    }
+    startLocalGameButton.addEventListener('click', startLocalGame);
+
+
+    /**
+     * Lógica pura de verificação de vitória.
+     */
+    const winningConditions = [ [0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6] ];
+    const checkWinLogic = (board, player) => {
+        for (const condition of winningConditions) {
+            const [a, b, c] = condition;
+            if (board[a] === player && board[b] === player && board[c] === player) {
+                return condition;
+            }
+        }
+        return null;
+    };
+
+
+    /**
+     * Executa o movimento, seja local ou online.
+     */
+    const handleCellClick = async (clickedCellEvent) => {
+        const index = parseInt(clickedCellEvent.target.getAttribute('data-index'));
+
+        if (!isMultiplayer) {
+            // --- MODO LOCAL ---
+            if (localGameState.status !== 'active') return;
+            if (localGameState.board[index] !== "") return;
+
+            const player = localGameState.currentPlayer;
+            localGameState.board[index] = player;
+            playMoveSound(player);
+
+            const winCombo = checkWinLogic(localGameState.board, player);
+            
+            if (winCombo) {
+                localGameState.status = 'finished';
+                localGameState.winner = player;
+            } else if (!localGameState.board.includes("")) {
+                localGameState.status = 'finished';
+                localGameState.winner = 'draw';
+            } else {
+                localGameState.currentPlayer = player === 'X' ? 'O' : 'X';
+            }
+
+            updateGameUI(localGameState);
             return;
         }
 
-        // Verifica empate (se não houver mais espaços vazios)
-        if (!gameState.includes("")) {
-            gameActive = false;
-            setStatusMessage("Empate! 🤝");
-            showDrawAnimation(); // Mostra a animação de empate
-            return;
-        }
 
-        // Se o jogo continuar, troca o jogador
-        changePlayer();
+        // --- MODO MULTIPLAYER (Firebase) ---
+        if (!currentGameId || !currentPlayerRole) return;
+        const gameDocRef = getGameDocRef(currentGameId);
+
+        try {
+            await runTransaction(db, async (transaction) => {
+                const gameDoc = await transaction.get(gameDocRef);
+                if (!gameDoc.exists() || gameDoc.data().status !== 'active') return;
+
+                const gameData = gameDoc.data();
+                const { board, currentPlayer } = gameData;
+                
+                if (currentPlayer !== currentPlayerRole) {
+                    throw new Error(`Não é sua vez!`);
+                }
+                
+                if (board[index] !== "") {
+                    throw new Error("Célula já ocupada.");
+                }
+
+                board[index] = currentPlayerRole;
+
+                let nextPlayer = currentPlayerRole === 'X' ? 'O' : 'X';
+                let newStatus = 'active';
+                let winner = null;
+                
+                const winCombo = checkWinLogic(board, currentPlayerRole);
+                if (winCombo) {
+                    newStatus = 'finished';
+                    winner = currentPlayerRole;
+                } else if (!board.includes("")) {
+                    newStatus = 'finished';
+                    winner = 'draw';
+                }
+
+                transaction.update(gameDocRef, {
+                    board: board,
+                    currentPlayer: nextPlayer,
+                    status: newStatus,
+                    winner: winner,
+                    lastMoveAt: new Date().getTime()
+                });
+                
+                playMoveSound(currentPlayerRole);
+            });
+
+        } catch (e) {
+            if (!e.message.includes("Não é sua vez")) {
+                showMessage(e.message, true);
+            }
+        }
     };
+    cells.forEach(cell => cell.addEventListener('click', handleCellClick));
+
+
+    // --- Lógica de Sincronização (onSnapshot) ---
 
     /**
-     * Alterna para o próximo jogador e atualiza o status.
+     * Inicia a escuta em tempo real do documento do jogo (SOMENTE MULTIPLAYER).
      */
-    const changePlayer = () => {
-        currentPlayer = currentPlayer === 'X' ? 'O' : 'X';
-        if (gameActive) {
-            setStatusMessage(`É a vez do Jogador ${currentPlayer}`);
-        }
-    };
+    const startListeningToGame = (id) => {
+        if (!isFirebaseAvailable) return;
+        
+        const gameDocRef = getGameDocRef(id);
 
-    /**
-     * Lida com o clique em uma célula.
-     * @param {Event} clickedCellEvent - O evento de clique.
-     */
-    const handleCellClick = (clickedCellEvent) => {
-        const clickedCell = clickedCellEvent.target;
-        const clickedCellIndex = parseInt(clickedCell.getAttribute('data-index'));
+        unsubscribe = onSnapshot(gameDocRef, (doc) => {
+            if (!doc.exists()) {
+                showMessage("O jogo foi deletado pelo criador. Voltando ao menu.", true);
+                handleBackToMenu();
+                return;
+            }
 
-        // Se a célula já estiver preenchida ou o jogo não estiver ativo, ignore
-        if (gameState[clickedCellIndex] !== "" || !gameActive) {
-            return;
-        }
-
-        // 1. Atualiza o estado do jogo e a célula na tela
-        gameState[clickedCellIndex] = currentPlayer;
-        clickedCell.innerHTML = currentPlayer;
-        clickedCell.classList.add('occupied'); // Marca a célula como ocupada
-
-        // 2. Verifica vitória ou empate
-        checkWin();
-    };
-
-    /**
-     * Reinicia o jogo para o estado inicial.
-     */
-    const handleResetGame = () => {
-        gameActive = true;
-        currentPlayer = 'X';
-        gameState = ["", "", "", "", "", "", "", "", ""];
-        setStatusMessage("É a vez do Jogador X");
-        hideDrawAnimation(); // Oculta a animação de empate ao reiniciar
-
-        cells.forEach(cell => {
-            cell.innerHTML = "";
-            cell.classList.remove('occupied', 'winning-cell');
+            const game = doc.data();
+            updateGameUI(game);
+        }, (error) => {
+            console.error("Erro no onSnapshot:", error);
+            showMessage("Erro de conexão em tempo real. Voltando ao menu.", true);
+            handleBackToMenu();
         });
     };
 
-    // Adiciona event listeners
-    cells.forEach(cell => cell.addEventListener('click', handleCellClick));
-    resetButton.addEventListener('click', handleResetGame);
+    /**
+     * Atualiza a interface do usuário com base no estado do jogo (Local ou Firebase).
+     */
+    const updateGameUI = (game) => {
+        if (!game) return;
 
-    // Inicia o jogo
-    handleResetGame();
+        // 1. Atualização do Tabuleiro
+        game.board.forEach((symbol, index) => {
+            const cell = document.getElementById(`c${index}`);
+            cell.innerHTML = symbol;
+            cell.classList.toggle('occupied', symbol !== "");
+        });
+        
+        // 2. Lógica de Lobby (Apenas Multiplayer)
+        if (isMultiplayer && game.status === 'waiting' && currentPlayerRole === 'X') {
+            currentGameId = currentGameId || game.id; 
+            gameIdDisplay.textContent = currentGameId;
+            showScreen('lobby-wait');
+            lobbyMessage.innerHTML = `Compartilhe o código: <b>${currentGameId}</b>. Você é o <b>X</b>, e é o primeiro a jogar.`;
+            return;
+        }
+
+        // 3. Status de Jogo Ativo / Fim de Jogo
+        
+        const isGameFinished = game.status === 'finished';
+        
+        // Exibe o papel do jogador local
+        if (isMultiplayer) {
+            const opponentRole = currentPlayerRole === 'X' ? 'O' : 'X';
+            const opponentName = game.players[opponentRole] ? game.players[opponentRole].name : "Oponente Desconectado";
+            playerRoleDisplay.innerHTML = `Você é <b>${currentPlayerRole}</b> (vs ${opponentName})`;
+        } else {
+             playerRoleDisplay.innerHTML = `MODO LOCAL - Jogador X vs Jogador O`;
+        }
+
+
+        if (isGameFinished) {
+            stopMusic(); 
+            // Vitória/Derrota
+            if (game.winner && game.winner !== 'draw') {
+                const winnerSymbol = game.winner;
+                const winnerName = isMultiplayer ? game.players[winnerSymbol].name : `Jogador ${winnerSymbol}`;
+
+                statusDisplay.innerHTML = `FIM DE JOGO! ${winnerName} VENCEU! 🏆`;
+                winOverlay.classList.add('active');
+                winText.textContent = `Parabéns, ${winnerName}! VOCÊ VENCEU!`;
+                playWinSound();
+                const winCombo = checkWinLogic(game.board, winnerSymbol);
+                if (winCombo) {
+                     winCombo.forEach(index => document.getElementById(`c${index}`).classList.add('winning-cell'));
+                }
+            } 
+            // Empate
+            else if (game.winner === 'draw') {
+                statusDisplay.innerHTML = `FIM DE JOGO! EMPATE! 🤝`;
+                drawAnimation.classList.add('active');
+                playDrawSound();
+            }
+            // Desabilita cliques no tabuleiro
+            document.getElementById('board').style.cursor = 'not-allowed';
+            return;
+        }
+
+        // 4. Status de Jogo Ativo (Turnos)
+        hideWinAnimation();
+        
+        const currentTurnPlayer = game.currentPlayer;
+        let isMyTurn = false;
+
+        if (isMultiplayer) {
+            isMyTurn = currentTurnPlayer === currentPlayerRole;
+            const currentTurnName = game.players[currentTurnPlayer]?.name || currentTurnPlayer;
+            statusDisplay.innerHTML = isMyTurn 
+                ? `É A SUA VEZ, <b>${currentTurnName}</b>!`
+                : `É a vez de <b>${currentTurnName}</b>...`;
+        } else {
+            // No modo local, é sempre "sua vez" para o jogador local, mas exibimos quem deve jogar
+            isMyTurn = true; 
+            statusDisplay.innerHTML = `É A VEZ DO JOGADOR <b>${currentTurnPlayer}</b>`;
+        }
+        
+        // Habilita/Desabilita cliques no tabuleiro
+        if (isMyTurn) {
+            document.getElementById('board').style.cursor = 'default';
+        } else {
+            document.getElementById('board').style.cursor = 'not-allowed';
+        }
+    };
+    
+    // --- Funções de Inicialização (CORRIGIDO) ---
+    
+    const updateAuthStatus = (isReady, isFirebaseOk) => {
+        if (!isFirebaseOk) {
+            authStatusDisplay.textContent = `Modo Multiplayer Desativado (Sem Firebase)`;
+            createGameButton.disabled = true;
+            showJoinButton.disabled = true;
+            return;
+        }
+        
+        if (isReady) {
+            authStatusDisplay.textContent = `Usuário ID: ${window.currentUserId.substring(0, 8)}... (Conectado)`;
+            createGameButton.disabled = false;
+            showJoinButton.disabled = false;
+        } else {
+            authStatusDisplay.textContent = 'Autenticando...';
+            createGameButton.disabled = true;
+            showJoinButton.disabled = true;
+        }
+    }
+    
+    /** CRÍTICO: Esta função agora é chamada *após* a autenticação. */
+    window.handleAuthReady = (isAuthSuccessful) => {
+        // Mostra o menu e atualiza o status, mesmo que a autenticação tenha falhado (isAuthSuccessful=false)
+        showScreen('start-menu');
+        updateAuthStatus(isAuthSuccessful, isFirebaseAvailable);
+    };
+    
+    // --- Event Listener do Botão de Copiar ID ---
+    copyIdButton.addEventListener('click', () => {
+        const id = gameIdDisplay.textContent;
+        const tempInput = document.createElement('input');
+        tempInput.value = id;
+        document.body.appendChild(tempInput);
+        tempInput.select();
+        try {
+            document.execCommand('copy');
+            showMessage(`Código do Jogo copiado: ${id}`, true); 
+        } catch (err) {
+            showMessage('Falha ao copiar o ID.', true);
+        }
+        document.body.removeChild(tempInput);
+    });
+
+    // Inicia o processo de autenticação quando o HTML estiver pronto
+    window.addEventListener('load', () => {
+        if (typeof window.initAuth === 'function') {
+            window.initAuth();
+        } else {
+             // Fallback caso o script module não carregue
+             updateAuthStatus(false, false);
+             showScreen('start-menu');
+        }
+    });
+
 </script>
 </body>
 </html>

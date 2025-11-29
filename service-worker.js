@@ -1,5 +1,5 @@
 // NOME DO CACHE ATUALIZADO (FORÇA O REFRESH)
-const CACHE_NAME = 'tic-tac-toe-v2';
+const CACHE_NAME = 'tic-tac-toe-v5';
 
 // Arquivos essenciais para o funcionamento offline (o "shell" do app)
 const urlsToCache = [
@@ -9,8 +9,8 @@ const urlsToCache = [
     'https://cdn.tailwindcss.com', 
     'https://em-content.zobj.net/source/apple/354/old-woman_1f475.png', 
     // URLs dos ícones (garante que sejam cacheados)
-    'https://placehold.co/192x192/4f46e5/ffffff?text=X+O',
-    'https://placehold.co/512x512/4f46e5/ffffff?text=X+O'
+    'https://placehold.co/192x192/E5322C/ffffff?text=X+O',
+    'https://placehold.co/512x512/E5322C/ffffff?text=X+O'
 ];
 
 // Instalação do Service Worker
@@ -22,7 +22,7 @@ self.addEventListener('install', event => {
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then(cache => {
-                console.log('Cache v2 aberto, adicionando arquivos essenciais...');
+                console.log('Cache v5 aberto, adicionando arquivos essenciais...');
                 return cache.addAll(urlsToCache);
             })
     );
@@ -30,7 +30,7 @@ self.addEventListener('install', event => {
 
 // Ativação do Service Worker
 self.addEventListener('activate', event => {
-    console.log('Service Worker v2 ativado. Limpando caches antigos.');
+    console.log('Service Worker v5 ativado. Limpando caches antigos.');
     // Deleta caches antigos para que a nova versão do PWA seja carregada
     event.waitUntil(
         caches.keys().then(cacheNames => {
